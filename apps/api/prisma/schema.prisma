@@ -1,0 +1,321 @@
+// Econnect v1 database schema — see docs/ARCHITECTURE.md and PRD for context.
+// Money is always stored as BIGINT kobo (1 Naira = 100 kobo). Never use Float for money.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  attendee
+  organizer
+  venue_admin
+  admin
+}
+
+enum VerificationStatus {
+  pending
+  verified
+  rejected
+}
+
+enum EventStatus {
+  draft
+  published
+  cancelled
+  completed
+}
+
+enum OrderStatus {
+  pending
+  paid
+  failed
+  refunded
+}
+
+enum TicketStatus {
+  unused
+  used
+  void
+}
+
+enum VenueStatus {
+  active
+  inactive
+}
+
+enum BookingStatus {
+  pending
+  accepted
+  declined
+  deposit_paid
+  confirmed
+  cancelled
+}
+
+enum PaymentStatus {
+  pending
+  confirmed
+  failed
+}
+
+model User {
+  id            String   @id @default(uuid())
+  email         String?  @unique
+  phone         String?  @unique
+  passwordHash  String?  @map("password_hash")
+  googleId      String?  @unique @map("google_id")
+  fullName      String   @map("full_name")
+  role          UserRole @default(attendee)
+  phoneVerified Boolean  @default(false) @map("phone_verified")
+  emailVerified Boolean  @default(false) @map("email_verified")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  refreshTokens      RefreshToken[]
+  organizerProfile   OrganizerProfile?
+  venueOwnerProfile  VenueOwnerProfile?
+  orders             Order[]
+  ticketsOwned       Ticket[]            @relation("TicketOwner")
+  ticketsCheckedIn   Ticket[]            @relation("TicketCheckedInBy")
+  notifications      Notification[]
+  verificationLogs   VerificationLog[]
+
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String    @map("user_id")
+  tokenHash String    @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([tokenHash])
+  @@map("refresh_tokens")
+}
+
+model OrganizerProfile {
+  id                  String             @id @default(uuid())
+  userId              String             @unique @map("user_id")
+  businessName        String?            @map("business_name")
+  verificationStatus  VerificationStatus @default(pending) @map("verification_status")
+  verifiedAt          DateTime?          @map("verified_at")
+  verifiedBy          String?            @map("verified_by")
+  createdAt           DateTime           @default(now()) @map("created_at")
+
+  user     User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  events   Event[]
+  bookings EventVenueBooking[]
+
+  @@map("organizer_profiles")
+}
+
+model Event {
+  id             String      @id @default(uuid())
+  organizerId    String      @map("organizer_id")
+  title          String
+  description    String?
+  category       String?
+  flyerUrl       String?     @map("flyer_url")
+  locationName   String?     @map("location_name")
+  latitude       Decimal?    @db.Decimal(9, 6)
+  longitude      Decimal?    @db.Decimal(9, 6)
+  startDatetime  DateTime    @map("start_datetime")
+  endDatetime    DateTime?   @map("end_datetime")
+  status         EventStatus @default(draft)
+  createdAt      DateTime    @default(now()) @map("created_at")
+  updatedAt      DateTime    @updatedAt @map("updated_at")
+
+  organizer    OrganizerProfile     @relation(fields: [organizerId], references: [id], onDelete: Cascade)
+  ticketTiers  TicketTier[]
+  venueBooking EventVenueBooking[]
+
+  @@index([organizerId])
+  @@index([status, startDatetime])
+  @@index([category])
+  @@map("events")
+}
+
+model TicketTier {
+  id             String    @id @default(uuid())
+  eventId        String    @map("event_id")
+  name           String
+  priceKobo      BigInt    @map("price_kobo")
+  quantityTotal  Int       @map("quantity_total")
+  quantitySold   Int       @default(0) @map("quantity_sold")
+  salesStart     DateTime? @map("sales_start")
+  salesEnd       DateTime? @map("sales_end")
+
+  event   Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  tickets Ticket[]
+
+  @@index([eventId])
+  @@map("ticket_tiers")
+}
+
+model Order {
+  id                String      @id @default(uuid())
+  userId            String      @map("user_id")
+  status            OrderStatus @default(pending)
+  totalKobo         BigInt      @map("total_kobo")
+  paymentReference  String?     @unique @map("payment_reference")
+  createdAt         DateTime    @default(now()) @map("created_at")
+  paidAt            DateTime?   @map("paid_at")
+
+  user    User     @relation(fields: [userId], references: [id])
+  tickets Ticket[]
+
+  @@index([userId])
+  @@index([status])
+  @@map("orders")
+}
+
+model Ticket {
+  id            String       @id @default(uuid())
+  orderId       String       @map("order_id")
+  ticketTierId  String       @map("ticket_tier_id")
+  ownerUserId   String       @map("owner_user_id")
+  qrSignature   String       @unique @map("qr_signature")
+  status        TicketStatus @default(unused)
+  checkedInAt   DateTime?    @map("checked_in_at")
+  checkedInBy   String?      @map("checked_in_by")
+  createdAt     DateTime     @default(now()) @map("created_at")
+
+  order      Order      @relation(fields: [orderId], references: [id])
+  ticketTier TicketTier @relation(fields: [ticketTierId], references: [id])
+  owner      User       @relation("TicketOwner", fields: [ownerUserId], references: [id])
+  checkedInByUser User? @relation("TicketCheckedInBy", fields: [checkedInBy], references: [id])
+
+  @@index([orderId])
+  @@index([ownerUserId])
+  @@map("tickets")
+}
+
+model VenueOwnerProfile {
+  id            String   @id @default(uuid())
+  userId        String?  @unique @map("user_id")
+  businessName  String   @map("business_name")
+  contactPhone  String   @map("contact_phone")
+  payoutAccount Json?    @map("payout_account")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  user   User?   @relation(fields: [userId], references: [id])
+  venues Venue[]
+
+  @@map("venue_owner_profiles")
+}
+
+model Venue {
+  id                String      @id @default(uuid())
+  venueOwnerId      String      @map("venue_owner_id")
+  name              String
+  description       String?
+  category          String?
+  address           String?
+  latitude          Decimal?    @db.Decimal(9, 6)
+  longitude         Decimal?    @db.Decimal(9, 6)
+  capacity          Int?
+  basePriceKobo     BigInt?     @map("base_price_kobo")
+  videoUrl          String?     @map("video_url")
+  status            VenueStatus @default(active)
+  createdByAdminId  String?     @map("created_by_admin_id")
+  createdAt         DateTime    @default(now()) @map("created_at")
+
+  venueOwner VenueOwnerProfile   @relation(fields: [venueOwnerId], references: [id])
+  photos     VenuePhoto[]
+  bookings   EventVenueBooking[]
+
+  @@index([venueOwnerId])
+  @@index([status])
+  @@index([category])
+  @@map("venues")
+}
+
+model VenuePhoto {
+  id        String @id @default(uuid())
+  venueId   String @map("venue_id")
+  url       String
+  sortOrder Int    @default(0) @map("sort_order")
+
+  venue Venue @relation(fields: [venueId], references: [id], onDelete: Cascade)
+
+  @@map("venue_photos")
+}
+
+model EventVenueBooking {
+  id                  String        @id @default(uuid())
+  eventId             String?       @map("event_id")
+  venueId             String        @map("venue_id")
+  organizerId         String        @map("organizer_id")
+  proposedDate        DateTime      @map("proposed_date") @db.Date
+  proposedBudgetKobo  BigInt?       @map("proposed_budget_kobo")
+  status              BookingStatus @default(pending)
+  depositAmountKobo   BigInt?       @map("deposit_amount_kobo")
+  depositPaidAt       DateTime?     @map("deposit_paid_at")
+  commissionKobo      BigInt?       @map("commission_kobo")
+  createdAt           DateTime      @default(now()) @map("created_at")
+  updatedAt           DateTime      @updatedAt @map("updated_at")
+
+  event      Event?            @relation(fields: [eventId], references: [id])
+  venue      Venue             @relation(fields: [venueId], references: [id])
+  organizer  OrganizerProfile  @relation(fields: [organizerId], references: [id])
+  payments   VenueBookingPayment[]
+
+  @@index([venueId, status])
+  @@index([organizerId])
+  @@index([proposedDate])
+  @@map("event_venue_bookings")
+}
+
+model VenueBookingPayment {
+  id                String        @id @default(uuid())
+  bookingId         String        @map("booking_id")
+  paymentReference  String        @unique @map("payment_reference")
+  amountKobo        BigInt        @map("amount_kobo")
+  platformFeeKobo   BigInt        @map("platform_fee_kobo")
+  venuePayoutKobo   BigInt        @map("venue_payout_kobo")
+  status            PaymentStatus @default(pending)
+  createdAt         DateTime      @default(now()) @map("created_at")
+  confirmedAt       DateTime?     @map("confirmed_at")
+
+  booking EventVenueBooking @relation(fields: [bookingId], references: [id])
+
+  @@map("venue_booking_payments")
+}
+
+model VerificationLog {
+  id         String   @id @default(uuid())
+  adminId    String   @map("admin_id")
+  targetType String   @map("target_type")
+  targetId   String   @map("target_id")
+  action     String
+  notes      String?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  admin User @relation(fields: [adminId], references: [id])
+
+  @@map("verification_logs")
+}
+
+model Notification {
+  id        String    @id @default(uuid())
+  userId    String    @map("user_id")
+  type      String
+  payload   Json?
+  readAt    DateTime? @map("read_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId, readAt])
+  @@map("notifications")
+}
