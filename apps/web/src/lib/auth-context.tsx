@@ -43,7 +43,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         fetch(`${API_BASE_URL}${path}`, {
           ...init,
           headers: {
-            ...(init.body ? { 'Content-Type': 'application/json' } : {}),
+            ...(init.body && !(init.body instanceof FormData) ? { 'Content-Type': 'application/json' } : {}),
             ...init.headers,
             ...(token ? { Authorization: `Bearer ${token}` } : {}),
           },
